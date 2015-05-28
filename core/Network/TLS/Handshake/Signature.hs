@@ -29,8 +29,9 @@ import Network.TLS.Util
 
 import Control.Applicative
 import Control.Monad.State
+import Control.Monad.Catch
 
-getHashAndASN1 :: MonadIO m => (HashAlgorithm, SignatureAlgorithm) -> m HashDescr
+getHashAndASN1 :: MonadThrow m => (HashAlgorithm, SignatureAlgorithm) -> m HashDescr
 getHashAndASN1 hashSig = case hashSig of
     (HashSHA1,   SignatureRSA) -> return hashDescrSHA1
     (HashSHA224, SignatureRSA) -> return hashDescrSHA224
@@ -39,7 +40,7 @@ getHashAndASN1 hashSig = case hashSig of
     (HashSHA512, SignatureRSA) -> return hashDescrSHA512
     _                          -> throwCore $ Error_Misc "unsupported hash/sig algorithm"
 
-prepareCertificateVerifySignatureData :: MonadIO m => Context m
+prepareCertificateVerifySignatureData :: (MonadThrow m, MonadIO m) => Context m
                                       -> Version
                                       -> Maybe HashAndSignatureAlgorithm
                                       -> Bytes
@@ -74,12 +75,12 @@ signatureHashData SignatureDSS mhash =
         Just _        -> error "invalid DSA hash choice, only SHA1 allowed"
 signatureHashData sig _ = error ("unimplemented signature type: " ++ show sig)
 
-signatureCreate :: (Functor m, MonadIO m) => Context m -> Maybe HashAndSignatureAlgorithm -> HashDescr -> Bytes -> m DigitallySigned
+signatureCreate :: (Functor m, MonadThrow m, MonadIO m) => Context m -> Maybe HashAndSignatureAlgorithm -> HashDescr -> Bytes -> m DigitallySigned
 signatureCreate ctx malg hashMethod toSign = do
     cc <- usingState_ ctx $ isClientContext
     DigitallySigned malg <$> signRSA ctx cc hashMethod toSign
 
-signatureVerify :: MonadIO m => Context m -> SignatureAlgorithm -> Bytes -> DigitallySigned -> m Bool
+signatureVerify :: (MonadThrow m, MonadIO m) => Context m -> SignatureAlgorithm -> Bytes -> DigitallySigned -> m Bool
 signatureVerify ctx sigAlgExpected toVerify digSig@(DigitallySigned hashSigAlg _) = do
     usedVersion <- usingState_ ctx getVersion
     let hashDescr = case (usedVersion, hashSigAlg) of
@@ -90,7 +91,7 @@ signatureVerify ctx sigAlgExpected toVerify digSig@(DigitallySigned hashSigAlg _
             (_,     Just _)     -> error "not expecting hash and signature algorithm in a < TLS12 digitially signed structure"
     signatureVerifyWithHashDescr ctx sigAlgExpected hashDescr toVerify digSig
 
-signatureVerifyWithHashDescr :: MonadIO m => Context m
+signatureVerifyWithHashDescr :: (MonadThrow m, MonadIO m) => Context m
                              -> SignatureAlgorithm
                              -> HashDescr
                              -> Bytes

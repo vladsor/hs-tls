@@ -24,10 +24,11 @@ import Network.TLS.Handshake.Server
 
 import Control.Monad.State
 import Control.Exception (fromException)
+import Control.Monad.Catch
 
 -- | Handshake for a new TLS connection
 -- This is to be called at the beginning of a connection, and during renegotiation
-handshake :: MonadIO m => Context m -> m ()
+handshake :: (MonadMask m, MonadIO m) => Context m -> m ()
 handshake ctx =
     handleException $ withRWLock ctx (ctxDoHandshake ctx $ ctx)
   where handleException f = catchException f $ \exception -> do

@@ -57,6 +57,7 @@ Library
                    , x509-store >= 1.5.0
                    , x509-validation >= 1.5.1 && < 1.6.0
                    , async
+                   , exceptions >= 0.8
   Exposed-modules:   Network.TLS
                      Network.TLS.Cipher
                      Network.TLS.Compression

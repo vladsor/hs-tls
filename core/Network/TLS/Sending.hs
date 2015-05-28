@@ -13,6 +13,8 @@ module Network.TLS.Sending (writePacket) where
 import Control.Applicative
 import Control.Monad.State
 import Control.Concurrent.MVar
+import Control.Monad.Catch
+
 import Data.IORef
 
 import Data.ByteString (ByteString)
@@ -48,7 +50,7 @@ encodeRecord record = return $ B.concat [ encodeHeader hdr, content ]
 
 -- | writePacket transform a packet into marshalled data related to current state
 -- and updating state on the go
-writePacket :: MonadIO m => Context m -> Packet -> m (Either TLSError ByteString)
+writePacket :: (MonadThrow m, MonadIO m) => Context m -> Packet -> m (Either TLSError ByteString)
 writePacket ctx pkt@(Handshake hss) = do
     forM_ hss $ \hs -> do
         case hs of
@@ -66,7 +68,7 @@ writePacket ctx pkt = do
 
 -- before TLS 1.1, the block cipher IV is made of the residual of the previous block,
 -- so we use cstIV as is, however in other case we generate an explicit IV
-prepareRecord :: MonadIO m => Context m -> RecordM a -> m (Either TLSError a)
+prepareRecord :: (MonadThrow m, MonadIO m) => Context m -> RecordM a -> m (Either TLSError a)
 prepareRecord ctx f = do
     ver     <- usingState_ ctx (getVersionWithDefault $ maximum $ supportedVersions $ ctxSupported ctx)
     txState <- liftIO $ readMVar $ ctxTxState ctx
@@ -80,7 +82,7 @@ prepareRecord ctx f = do
                 runTxState ctx (modify (setRecordIV newIV) >> f)
         else runTxState ctx f
 
-switchTxEncryption :: MonadIO m => Context m -> m ()
+switchTxEncryption :: (MonadThrow m, MonadIO m) => Context m -> m ()
 switchTxEncryption ctx = do
     tx  <- usingHState ctx (fromJust "tx-state" <$> gets hstPendingTxState)
     (ver, cc) <- usingState_ ctx $ do v <- getVersion

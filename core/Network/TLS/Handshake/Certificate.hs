@@ -15,9 +15,10 @@ import Network.TLS.Struct
 import Network.TLS.X509
 import Control.Monad.State
 import Control.Exception (SomeException)
+import Control.Monad.Catch
 
 -- on certificate reject, throw an exception with the proper protocol alert error.
-certificateRejected :: MonadIO m => CertificateRejectReason -> m a
+certificateRejected :: MonadThrow m => CertificateRejectReason -> m a
 certificateRejected CertificateRejectRevoked =
     throwCore $ Error_Protocol ("certificate is revoked", True, CertificateRevoked)
 certificateRejected CertificateRejectExpired =
@@ -27,5 +28,5 @@ certificateRejected CertificateRejectUnknownCA =
 certificateRejected (CertificateRejectOther s) =
     throwCore $ Error_Protocol ("certificate rejected: " ++ s, True, CertificateUnknown)
 
-rejectOnException :: SomeException -> IO CertificateUsage
+rejectOnException :: Monad m => SomeException -> m CertificateUsage
 rejectOnException e = return $ CertificateUsageReject $ CertificateRejectOther $ show e

@@ -35,6 +35,7 @@ import Data.ByteString.Char8 ()
 
 import Control.Applicative ((<$>))
 import Control.Monad.State
+import Control.Monad.Catch
 
 import Network.TLS.Handshake.Signature
 import Network.TLS.Handshake.Common
@@ -47,7 +48,7 @@ import Network.TLS.X509
 --
 -- This is just a helper to pop the next message from the recv layer,
 -- and call handshakeServerWith.
-handshakeServer :: (Functor m, MonadIO m) => ServerParams m -> Context m -> m ()
+handshakeServer :: (Functor m, MonadCatch m, MonadIO m) => ServerParams m -> Context m -> m ()
 handshakeServer sparams ctx = do
     hss <- recvPacketHandshake ctx
     case hss of
@@ -79,7 +80,7 @@ handshakeServer sparams ctx = do
 --      -> change cipher      <- change cipher
 --      -> finish             <- finish
 --
-handshakeServerWith :: (Functor m, MonadIO m) => ServerParams m -> Context m -> Handshake -> m ()
+handshakeServerWith :: (Functor m, MonadCatch m, MonadIO m) => ServerParams m -> Context m -> Handshake -> m ()
 handshakeServerWith sparams ctx clientHello@(ClientHello clientVersion _ clientSession ciphers compressions exts _) = do
     -- check if policy allow this new handshake to happens
     handshakeAuthorized <- withMeasure ctx (onNewHandshake $ serverHooks sparams)
@@ -139,7 +140,7 @@ handshakeServerWith sparams ctx clientHello@(ClientHello clientVersion _ clientS
 
 handshakeServerWith _ _ _ = throwCore $ Error_Protocol ("unexpected handshake message received in handshakeServerWith", True, HandshakeFailure)
 
-doHandshake :: (Functor m, MonadIO m) => ServerParams m -> Maybe Credential -> Context m -> Version -> Cipher
+doHandshake :: (Functor m, MonadCatch m, MonadIO m) => ServerParams m -> Maybe Credential -> Context m -> Version -> Cipher
             -> Compression -> Session -> Maybe SessionData
             -> [(ExtensionID, a)] -> m ()
 doHandshake sparams mcred ctx chosenVersion usedCipher usedCompression clientSession resumeSessionData exts = do
@@ -336,7 +337,7 @@ doHandshake sparams mcred ctx chosenVersion usedCipher usedCompression clientSes
 --      <- [NPN]
 --      <- finish
 --
-recvClientData :: (Functor m, MonadIO m) => ServerParams m -> Context m -> m ()
+recvClientData :: (Functor m, MonadCatch m, MonadIO m) => ServerParams m -> Context m -> m ()
 recvClientData sparams ctx = runRecvState ctx (RecvStateHandshake processClientCertificate)
   where processClientCertificate (Certificates certs) = do
             -- run certificate recv hook
@@ -344,7 +345,7 @@ recvClientData sparams ctx = runRecvState ctx (RecvStateHandshake processClientC
             -- Call application callback to see whether the
             -- certificate chain is acceptable.
             --
-            usage <- catchException (onClientCertificate (serverHooks sparams) certs) (liftIO . rejectOnException)
+            usage <- catchException (onClientCertificate (serverHooks sparams) certs) rejectOnException
             case usage of
                 CertificateUsageAccept        -> return ()
                 CertificateUsageReject reason -> certificateRejected reason

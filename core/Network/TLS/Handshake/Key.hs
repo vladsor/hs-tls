@@ -26,11 +26,12 @@ import Network.TLS.Types
 import Network.TLS.Context.Internal
 
 import Control.Monad.IO.Class
+import Control.Monad.Catch
 
 {- if the RSA encryption fails we just return an empty bytestring, and let the protocol
  - fail by itself; however it would be probably better to just report it since it's an internal problem.
  -}
-encryptRSA :: MonadIO m => Context m -> ByteString -> m ByteString
+encryptRSA :: (MonadThrow m, MonadIO m) => Context m -> ByteString -> m ByteString
 encryptRSA ctx content = do
     publicKey <- usingHState ctx getRemotePublicKey
     usingState_ ctx $ do
@@ -39,7 +40,7 @@ encryptRSA ctx content = do
             Left err       -> fail ("rsa encrypt failed: " ++ show err)
             Right econtent -> return econtent
 
-signRSA :: MonadIO m => Context m -> Role -> HashDescr -> ByteString -> m ByteString
+signRSA :: (MonadThrow m, MonadIO m) => Context m -> Role -> HashDescr -> ByteString -> m ByteString
 signRSA ctx _ hsh content = do
     privateKey <- usingHState ctx getLocalPrivateKey
     usingState_ ctx $ do
@@ -48,7 +49,7 @@ signRSA ctx _ hsh content = do
             Left err       -> fail ("rsa sign failed: " ++ show err)
             Right econtent -> return econtent
 
-decryptRSA :: MonadIO m => Context m -> ByteString -> m (Either KxError ByteString)
+decryptRSA :: (MonadThrow m, MonadIO m) => Context m -> ByteString -> m (Either KxError ByteString)
 decryptRSA ctx econtent = do
     privateKey <- usingHState ctx getLocalPrivateKey
     usingState_ ctx $ do
@@ -61,8 +62,8 @@ verifyRSA ctx _ hsh econtent sign = do
     publicKey <- usingHState ctx getRemotePublicKey
     return $ kxVerify publicKey hsh econtent sign
 
-generateDHE :: MonadIO m => Context m -> DHParams -> m (DHPrivate, DHPublic)
+generateDHE :: (MonadThrow m, MonadIO m) => Context m -> DHParams -> m (DHPrivate, DHPublic)
 generateDHE ctx dhp = usingState_ ctx $ withRNG $ \rng -> dhGenerateKeyPair rng dhp
 
-generateECDHE :: MonadIO m => Context m -> ECDHParams -> m (ECDHPrivate, ECDHPublic)
+generateECDHE :: (MonadThrow m, MonadIO m) => Context m -> ECDHParams -> m (ECDHPrivate, ECDHPublic)
 generateECDHE ctx dhp = usingState_ ctx $ withRNG $ \rng -> ecdhGenerateKeyPair rng dhp

@@ -82,6 +82,7 @@ import Crypto.Random
 
 import Control.Concurrent.MVar
 import Control.Monad.State
+import Control.Monad.Catch
 import Data.IORef
 
 -- deprecated imports
@@ -95,7 +96,7 @@ class TLSParams a m | a -> m where
     doHandshake        :: a -> Context m -> m ()
     doHandshakeWith    :: a -> Context m -> Handshake -> m ()
 
-instance (Functor m, MonadIO m) => TLSParams (ClientParams m) m where
+instance (Functor m, MonadCatch m, MonadIO m) => TLSParams (ClientParams m) m where
     getTLSCommonParams cparams = ( clientSupported cparams
                                  , clientShared cparams
                                  )
@@ -104,7 +105,7 @@ instance (Functor m, MonadIO m) => TLSParams (ClientParams m) m where
     doHandshake = handshakeClient
     doHandshakeWith = handshakeClientWith
 
-instance (Functor m, MonadIO m) => TLSParams (ServerParams m) m where
+instance (Functor m, MonadCatch m, MonadIO m) => TLSParams (ServerParams m) m where
     getTLSCommonParams sparams = ( serverSupported sparams
                                  , serverShared sparams
                                  )

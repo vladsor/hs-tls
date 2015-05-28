@@ -32,7 +32,9 @@ import Network.TLS.Handshake.Key
 import Network.TLS.Extension
 import Data.X509 (CertificateChain(..), Certificate(..), getCertificate)
 
-processHandshake :: (Functor m, MonadIO m) => Context m -> Handshake -> m ()
+import Control.Monad.Catch
+
+processHandshake :: (Functor m, MonadThrow m, MonadIO m) => Context m -> Handshake -> m ()
 processHandshake ctx hs = do
     role <- usingState_ ctx isClientContext
     case hs of
@@ -70,7 +72,7 @@ processHandshake ctx hs = do
 -- process the client key exchange message. the protocol expects the initial
 -- client version received in ClientHello, not the negotiated version.
 -- in case the version mismatch, generate a random master secret
-processClientKeyXchg :: (Functor m, MonadIO m) => Context m -> ClientKeyXchgAlgorithmData -> m ()
+processClientKeyXchg :: (Functor m, MonadThrow m, MonadIO m) => Context m -> ClientKeyXchgAlgorithmData -> m ()
 processClientKeyXchg ctx (CKX_RSA encryptedPremaster) = do
     (rver, role, random) <- usingState_ ctx $ do
         (,,) <$> getVersion <*> isClientContext <*> genRandom 48
@@ -104,7 +106,7 @@ processClientKeyXchg ctx (CKX_ECDH clientECDHValue) = do
         Just premaster ->
             usingHState ctx $ setMasterSecretFromPre rver role premaster
 
-processClientFinished :: MonadIO m => Context m -> FinishedData -> m ()
+processClientFinished :: (MonadThrow m, MonadIO m) => Context m -> FinishedData -> m ()
 processClientFinished ctx fdata = do
     (cc,ver) <- usingState_ ctx $ (,) <$> isClientContext <*> getVersion
     expected <- usingHState ctx $ getHandshakeDigest ver $ invertRole cc

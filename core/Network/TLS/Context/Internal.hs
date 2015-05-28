@@ -69,11 +69,10 @@ import qualified Data.ByteString as B
 
 import Control.Concurrent.MVar
 import Control.Monad.State
-import Control.Exception (throwIO, Exception())
+import Control.Exception (Exception())
 import Data.IORef
 import Data.Tuple
-import Control.Exception.Base
-
+import Control.Monad.Catch
 
 -- | Information related to a running context, e.g. current cipher
 data Information = Information
@@ -123,7 +122,7 @@ contextClose :: MonadIO m => Context m -> m ()
 contextClose = backendClose . ctxConnection
 
 -- | Information about the current context
-contextGetInformation :: MonadIO m => Context m -> m (Maybe Information)
+contextGetInformation :: (MonadThrow m, MonadIO m) => Context m -> m (Maybe Information)
 contextGetInformation ctx = do
     ver    <- usingState_ ctx $ gets stVersion
     (cipher,comp) <- failOnEitherError $ runRxState ctx $ gets $ \st -> (stCipher st, stCompression st)
@@ -164,10 +163,10 @@ setEstablished ctx v = liftIO $ writeIORef (ctxEstablished_ ctx) v
 withLog :: MonadIO m => Context m -> (Logging m -> m ()) -> m ()
 withLog ctx f = ctxWithHooks ctx (f . hookLogging)
 
-throwCore :: (MonadIO m, Exception e) => e -> m a
-throwCore = liftIO . throwIO
+throwCore :: (MonadThrow m, Exception e) => e -> m a
+throwCore = throwM
 
-failOnEitherError :: MonadIO m => m (Either TLSError a) -> m a
+failOnEitherError :: MonadThrow m => m (Either TLSError a) -> m a
 failOnEitherError f = do
     ret <- f
     case ret of
@@ -180,7 +179,7 @@ usingState ctx f =
             let (a, newst) = runTLSState f st
              in newst `seq` return (newst, a)
 
-usingState_ :: MonadIO m => Context m -> TLSSt a -> m a
+usingState_ :: (MonadThrow m, MonadIO m) => Context m -> TLSSt a -> m a
 usingState_ ctx f = failOnEitherError $ usingState ctx f
 
 usingHState :: MonadIO m => Context m -> HandshakeM a -> m a
@@ -192,7 +191,7 @@ usingHState ctx f = liftIO $ modifyMVar (ctxHandshake ctx) $ \mst ->
 getHState :: MonadIO m => Context m -> m (Maybe HandshakeState)
 getHState ctx = liftIO $ readMVar (ctxHandshake ctx)
 
-runTxState :: MonadIO m => Context m -> RecordM a -> m (Either TLSError a)
+runTxState :: (MonadThrow m, MonadIO m) => Context m -> RecordM a -> m (Either TLSError a)
 runTxState ctx f = do
     ver <- usingState_ ctx (getVersionWithDefault $ maximum $ supportedVersions $ ctxSupported ctx)
     liftIO $ modifyMVar (ctxTxState ctx) $ \st ->
@@ -200,7 +199,7 @@ runTxState ctx f = do
             Left err         -> return (st, Left err)
             Right (a, newSt) -> return (newSt, Right a)
 
-runRxState :: MonadIO m => Context m -> RecordM a -> m (Either TLSError a)
+runRxState :: (MonadThrow m, MonadIO m) => Context m -> RecordM a -> m (Either TLSError a)
 runRxState ctx f = do
     ver <- usingState_ ctx getVersion
     liftIO $ modifyMVar (ctxRxState ctx) $ \st ->
@@ -208,32 +207,26 @@ runRxState ctx f = do
             Left err         -> return (st, Left err)
             Right (a, newSt) -> return (newSt, Right a)
 
-getStateRNG :: MonadIO m => Context m -> Int -> m Bytes
+getStateRNG :: (MonadThrow m, MonadIO m) => Context m -> Int -> m Bytes
 getStateRNG ctx n = usingState_ ctx $ genRandom n
 
-withReadLock :: MonadIO m => Context m -> m a -> m a
+withReadLock :: (MonadMask m, MonadIO m) => Context m -> m a -> m a
 withReadLock ctx f = withMVar' (ctxLockRead ctx) (const f)
 
-withWriteLock :: MonadIO m => Context m -> m a -> m a
+withWriteLock :: (MonadMask m, MonadIO m) => Context m -> m a -> m a
 withWriteLock ctx f = withMVar' (ctxLockWrite ctx) (const f)
 
-withRWLock :: MonadIO m => Context m -> m a -> m a
+withRWLock :: (MonadMask m, MonadIO m) => Context m -> m a -> m a
 withRWLock ctx f = withReadLock ctx $ withWriteLock ctx f
 
-withStateLock :: MonadIO m => Context m -> m a -> m a
+withStateLock :: (MonadMask m, MonadIO m) => Context m -> m a -> m a
 withStateLock ctx f = withMVar' (ctxLockState ctx) (const f)
 
 
-withMVar' :: MonadIO m => MVar a -> (a -> m b) -> m b
-withMVar' m io = do
+withMVar' :: (MonadMask m, MonadIO m) => MVar a -> (a -> m b) -> m b
+withMVar' m io =
+  mask $ \restore -> do
     a <- liftIO $ takeMVar m
-    b <- io a
+    b <- restore (io a) `onException` (liftIO $ putMVar m a)
     liftIO $ putMVar m a
     return b
-  {-
-  mask $ \restore -> do
-    a <- takeMVar m
-    b <- restore (io a) `onException` putMVar m a
-    putMVar m a
-    return b
--}

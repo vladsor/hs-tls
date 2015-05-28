@@ -41,24 +41,24 @@ import qualified Data.ByteString.Lazy as L
 import qualified Control.Exception as E
 
 import Control.Monad.State
-
+import Control.Monad.Catch
 
 -- | notify the context that this side wants to close connection.
 -- this is important that it is called before closing the handle, otherwise
 -- the session might not be resumable (for version < TLS1.2).
 --
 -- this doesn't actually close the handle
-bye :: MonadIO m => Context m -> m ()
+bye :: (MonadThrow m, MonadIO m) => Context m -> m ()
 bye ctx = sendPacket ctx $ Alert [(AlertLevel_Warning, CloseNotify)]
 
 -- | If the Next Protocol Negotiation extension has been used, this will
 -- return get the protocol agreed upon.
-getNegotiatedProtocol :: MonadIO m => Context m -> m (Maybe B.ByteString)
+getNegotiatedProtocol :: (MonadThrow m, MonadIO m) => Context m -> m (Maybe B.ByteString)
 getNegotiatedProtocol ctx = usingState_ ctx S.getNegotiatedProtocol
 
 -- | sendData sends a bunch of data.
 -- It will automatically chunk data to acceptable packet size
-sendData :: MonadIO m => Context m -> L.ByteString -> m ()
+sendData :: (MonadThrow m, MonadIO m) => Context m -> L.ByteString -> m ()
 sendData ctx dataToSend = (checkValid ctx) >> mapM_ sendDataChunk (L.toChunks dataToSend)
   where sendDataChunk d
             | B.length d > 16384 = do
@@ -69,12 +69,12 @@ sendData ctx dataToSend = (checkValid ctx) >> mapM_ sendDataChunk (L.toChunks da
 
 -- | recvData get data out of Data packet, and automatically renegotiate if
 -- a Handshake ClientHello is received
-recvData :: MonadIO m => Context m -> m B.ByteString
+recvData :: (MonadMask m, MonadIO m) => Context m -> m B.ByteString
 recvData ctx = do
     checkValid ctx
---    liftIO $ E.catchJust safeHandleError_EOF
---                doRecv
---                (\() -> return B.empty)
+    catchJust safeHandleError_EOF
+              doRecv
+              (\() -> return B.empty)
     doRecv
   where doRecv = do
             pkt <- withReadLock ctx $ recvPacket ctx
@@ -96,7 +96,7 @@ recvData ctx = do
         process (Alert [(AlertLevel_Warning, CloseNotify)]) = tryBye >> setEOF ctx >> return B.empty
         process (Alert [(AlertLevel_Fatal, desc)]) = do
             setEOF ctx
-            liftIO $ E.throwIO (Terminated True ("received fatal error: " ++ show desc) (Error_Protocol ("remote side fatal error", True, desc)))
+            throwM (Terminated True ("received fatal error: " ++ show desc) (Error_Protocol ("remote side fatal error", True, desc)))
 
         -- when receiving empty appdata, we just retry to get some data.
         process (AppData "") = recvData ctx
@@ -112,7 +112,7 @@ recvData ctx = do
                 Session (Just sid) -> sessionInvalidate (sharedSessionManager $ ctxShared ctx) sid
             catchException (sendPacket ctx $ Alert [(level, desc)]) (\_ -> return ())
             setEOF ctx
-            liftIO $ E.throwIO (Terminated False reason err)
+            throwM (Terminated False reason err)
 
         -- the other side could have close the connection already, so wrap
         -- this in a try and ignore all exceptions
@@ -120,5 +120,5 @@ recvData ctx = do
 
 {-# DEPRECATED recvData' "use recvData that returns strict bytestring" #-}
 -- | same as recvData but returns a lazy bytestring.
-recvData' :: MonadIO m => Context m -> m L.ByteString
+recvData' :: (MonadMask m, MonadIO m) => Context m -> m L.ByteString
 recvData' ctx = recvData ctx >>= return . L.fromChunks . (:[])

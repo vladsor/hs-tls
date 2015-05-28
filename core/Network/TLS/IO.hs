@@ -25,17 +25,17 @@ import Data.ByteString.Char8 ()
 
 import Data.IORef
 import Control.Monad.State
-import Control.Exception (throwIO)
+import Control.Monad.Catch
 import System.IO.Error (mkIOError, eofErrorType)
 
-checkValid :: MonadIO m => Context m -> m ()
+checkValid :: (MonadThrow m, MonadIO m) => Context m -> m ()
 checkValid ctx = do
     established <- ctxEstablished ctx
-    unless established $ liftIO $ throwIO ConnectionNotEstablished
+    unless established $ throwM ConnectionNotEstablished
     eofed <- ctxEOF ctx
-    when eofed $ liftIO $ throwIO $ mkIOError eofErrorType "data" Nothing Nothing
+    when eofed $ throwM $ mkIOError eofErrorType "data" Nothing Nothing
 
-readExact :: MonadIO m => Context m -> Int -> m Bytes
+readExact :: (MonadThrow m, MonadIO m) => Context m -> Int -> m Bytes
 readExact ctx sz = do
     hdrbs <- contextRecv ctx sz
     when (B.length hdrbs < sz) $ do
@@ -48,7 +48,7 @@ readExact ctx sz = do
 -- | recvRecord receive a full TLS record (header + data), from the other side.
 --
 -- The record is disengaged from the record layer
-recvRecord :: (Monad m, MonadIO m) => Bool    -- ^ flag to enable SSLv2 compat ClientHello reception
+recvRecord :: (MonadThrow m, MonadIO m) => Bool    -- ^ flag to enable SSLv2 compat ClientHello reception
            -> Context m -- ^ TLS context
            -> m (Either TLSError (Record Plaintext))
 recvRecord compatSSLv2 ctx
@@ -82,7 +82,7 @@ recvRecord compatSSLv2 ctx
 -- | receive one packet from the context that contains 1 or
 -- many messages (many only in case of handshake). if will returns a
 -- TLSError if the packet is unexpected or malformed
-recvPacket :: MonadIO m => Context m -> m (Either TLSError Packet)
+recvPacket :: (MonadThrow m, MonadIO m) => Context m -> m (Either TLSError Packet)
 recvPacket ctx = do
     compatSSLv2 <- ctxHasSSLv2ClientHello ctx
     erecord     <- recvRecord compatSSLv2 ctx
@@ -102,7 +102,7 @@ recvPacket ctx = do
             return pkt
 
 -- | Send one packet to the context
-sendPacket :: MonadIO m => Context m -> Packet -> m ()
+sendPacket :: (MonadThrow m, MonadIO m) => Context m -> Packet -> m ()
 sendPacket ctx pkt = do
     -- in ver <= TLS1.0, block ciphers using CBC are using CBC residue as IV, which can be guessed
     -- by an attacker. Hence, an empty packet is sent before a normal data packet, to
