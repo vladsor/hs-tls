@@ -1,3 +1,7 @@
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
+
 -- |
 -- Module      : Network.TLS.Context
 -- License     : BSD-style
@@ -84,14 +88,14 @@ import Data.IORef
 import Network.Socket (Socket)
 import System.IO (Handle)
 
-class TLSParams a where
-    getTLSCommonParams :: a -> CommonParams
+class TLSParams a m | a -> m where
+    getTLSCommonParams :: a -> CommonParams m
     getTLSRole         :: a -> Role
     getCiphers         :: a -> [Cipher]
-    doHandshake        :: a -> Context -> IO ()
-    doHandshakeWith    :: a -> Context -> Handshake -> IO ()
+    doHandshake        :: a -> Context m -> m ()
+    doHandshakeWith    :: a -> Context m -> Handshake -> m ()
 
-instance TLSParams ClientParams where
+instance (Functor m, MonadIO m) => TLSParams (ClientParams m) m where
     getTLSCommonParams cparams = ( clientSupported cparams
                                  , clientShared cparams
                                  )
@@ -100,7 +104,7 @@ instance TLSParams ClientParams where
     doHandshake = handshakeClient
     doHandshakeWith = handshakeClientWith
 
-instance TLSParams ServerParams where
+instance (Functor m, MonadIO m) => TLSParams (ServerParams m) m where
     getTLSCommonParams sparams = ( serverSupported sparams
                                  , serverShared sparams
                                  )
@@ -133,12 +137,12 @@ instance TLSParams ServerParams where
     doHandshakeWith = handshakeServerWith
 
 -- | create a new context using the backend and parameters specified.
-contextNew :: (MonadIO m, CPRG rng, HasBackend backend, TLSParams params)
+contextNew :: (MonadIO m, CPRG rng, HasBackend backend m, TLSParams params m)
            => backend   -- ^ Backend abstraction with specific method to interact with the connection type.
            -> params    -- ^ Parameters of the context.
            -> rng       -- ^ Random number generator associated with this context.
-           -> m Context
-contextNew backend params rng = liftIO $ do
+           -> m (Context m)
+contextNew backend params rng = do
     initializeBackend backend
 
     let role = getTLSRole params
@@ -148,21 +152,21 @@ contextNew backend params rng = liftIO $ do
 
     when (null ciphers) $ error "no ciphers available with those parameters"
 
-    stvar <- newMVar st
-    eof   <- newIORef False
-    established <- newIORef False
-    stats <- newIORef newMeasurement
+    stvar <- liftIO $ newMVar st
+    eof   <- liftIO $ newIORef False
+    established <- liftIO $ newIORef False
+    stats <- liftIO $ newIORef newMeasurement
     -- we enable the reception of SSLv2 ClientHello message only in the
     -- server context, where we might be dealing with an old/compat client.
-    sslv2Compat <- newIORef (role == ServerRole)
-    needEmptyPacket <- newIORef False
-    hooks <- newIORef defaultHooks
-    tx    <- newMVar newRecordState
-    rx    <- newMVar newRecordState
-    hs    <- newMVar Nothing
-    lockWrite <- newMVar ()
-    lockRead  <- newMVar ()
-    lockState <- newMVar ()
+    sslv2Compat <- liftIO $ newIORef (role == ServerRole)
+    needEmptyPacket <- liftIO $ newIORef False
+    hooks <- liftIO $ newIORef defaultHooks
+    tx    <- liftIO $ newMVar newRecordState
+    rx    <- liftIO $ newMVar newRecordState
+    hs    <- liftIO $ newMVar Nothing
+    lockWrite <- liftIO $ newMVar ()
+    lockRead  <- liftIO $ newMVar ()
+    lockState <- liftIO $ newMVar ()
 
     return $ Context
             { ctxConnection   = getBackend backend
@@ -187,31 +191,31 @@ contextNew backend params rng = liftIO $ do
             }
 
 -- | create a new context on an handle.
-contextNewOnHandle :: (MonadIO m, CPRG rng, TLSParams params)
+contextNewOnHandle :: (MonadIO m, CPRG rng, TLSParams params m)
                    => Handle -- ^ Handle of the connection.
                    -> params -- ^ Parameters of the context.
                    -> rng    -- ^ Random number generator associated with this context.
-                   -> m Context
+                   -> m (Context m)
 contextNewOnHandle handle params st = contextNew handle params st
 {-# DEPRECATED contextNewOnHandle "use contextNew" #-}
 
 -- | create a new context on a socket.
-contextNewOnSocket :: (MonadIO m, CPRG rng, TLSParams params)
+contextNewOnSocket :: (MonadIO m, CPRG rng, TLSParams params m)
                    => Socket -- ^ Socket of the connection.
                    -> params -- ^ Parameters of the context.
                    -> rng    -- ^ Random number generator associated with this context.
-                   -> m Context
+                   -> m (Context m)
 contextNewOnSocket sock params st = contextNew sock params st
 {-# DEPRECATED contextNewOnSocket "use contextNew" #-}
 
-contextHookSetHandshakeRecv :: Context -> (Handshake -> IO Handshake) -> IO ()
+contextHookSetHandshakeRecv :: MonadIO m => Context m -> (Handshake -> m Handshake) -> m ()
 contextHookSetHandshakeRecv context f =
     contextModifyHooks context (\hooks -> hooks { hookRecvHandshake = f })
 
-contextHookSetCertificateRecv :: Context -> (CertificateChain -> IO ()) -> IO ()
+contextHookSetCertificateRecv :: MonadIO m => Context m -> (CertificateChain -> m ()) -> m ()
 contextHookSetCertificateRecv context f =
     contextModifyHooks context (\hooks -> hooks { hookRecvCertificates = f })
 
-contextHookSetLogging :: Context -> Logging -> IO ()
+contextHookSetLogging :: MonadIO m => Context m -> Logging m -> m ()
 contextHookSetLogging context loggingCallbacks =
     contextModifyHooks context (\hooks -> hooks { hookLogging = loggingCallbacks })

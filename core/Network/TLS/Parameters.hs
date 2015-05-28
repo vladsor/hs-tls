@@ -38,9 +38,11 @@ import Data.Monoid
 import Data.Default.Class
 import qualified Data.ByteString as B
 
-type CommonParams = (Supported, Shared)
+import Control.Monad.IO.Class
 
-data ClientParams = ClientParams
+type CommonParams m = (Supported, Shared m)
+
+data ClientParams m = ClientParams
     { clientUseMaxFragmentLength    :: Maybe MaxFragmentEnum
       -- | Define the name of the server, along with an extra service identification blob.
       -- this is important that the hostname part is properly filled for security reason,
@@ -57,12 +59,12 @@ data ClientParams = ClientParams
     , clientUseServerNameIndication   :: Bool
       -- | try to establish a connection using this session.
     , clientWantSessionResume         :: Maybe (SessionID, SessionData)
-    , clientShared                    :: Shared
-    , clientHooks                     :: ClientHooks
+    , clientShared                    :: Shared m
+    , clientHooks                     :: ClientHooks m
     , clientSupported                 :: Supported
     } deriving (Show)
 
-defaultParamsClient :: HostName -> Bytes -> ClientParams
+defaultParamsClient :: MonadIO m => HostName -> Bytes -> ClientParams m
 defaultParamsClient serverName serverId = ClientParams
     { clientWantSessionResume    = Nothing
     , clientUseMaxFragmentLength = Nothing
@@ -73,7 +75,7 @@ defaultParamsClient serverName serverId = ClientParams
     , clientSupported            = def
     }
 
-data ServerParams = ServerParams
+data ServerParams m = ServerParams
     { -- | request a certificate from client.
       serverWantClientCert    :: Bool
 
@@ -86,12 +88,12 @@ data ServerParams = ServerParams
       -- properly set, no Diffie Hellman key exchange will take place.
     , serverDHEParams         :: Maybe DHParams
 
-    , serverShared            :: Shared
-    , serverHooks             :: ServerHooks
+    , serverShared            :: Shared m
+    , serverHooks             :: ServerHooks m
     , serverSupported         :: Supported
     } deriving (Show)
 
-defaultParamsServer :: ServerParams
+defaultParamsServer :: MonadIO m => ServerParams m
 defaultParamsServer = ServerParams
     { serverWantClientCert   = False
     , serverCACertificates   = []
@@ -101,7 +103,7 @@ defaultParamsServer = ServerParams
     , serverSupported        = def
     }
 
-instance Default ServerParams where
+instance MonadIO m => Default (ServerParams m) where
     def = defaultParamsServer
 
 -- | List all the supported algorithms, versions, ciphers, etc supported.
@@ -143,16 +145,16 @@ defaultSupported = Supported
 instance Default Supported where
     def = defaultSupported
 
-data Shared = Shared
+data Shared m = Shared
     { sharedCredentials     :: Credentials
-    , sharedSessionManager  :: SessionManager
+    , sharedSessionManager  :: SessionManager m
     , sharedCAStore         :: CertificateStore
     , sharedValidationCache :: ValidationCache
     }
 
-instance Show Shared where
+instance Show (Shared m) where
     show _ = "Shared"
-instance Default Shared where
+instance Monad m => Default (Shared m) where
     def = Shared
             { sharedCAStore         = mempty
             , sharedCredentials     = mempty
@@ -161,7 +163,7 @@ instance Default Shared where
             }
 
 -- | A set of callbacks run by the clients for various corners of TLS establishment
-data ClientHooks = ClientHooks
+data ClientHooks m = ClientHooks
     { -- | This action is called when the server sends a
       -- certificate request.  The parameter is the information
       -- from the request.  The action should select a certificate
@@ -183,38 +185,38 @@ data ClientHooks = ClientHooks
       -- depending whether the server accepts it.
       onCertificateRequest :: ([CertificateType],
                                Maybe [HashAndSignatureAlgorithm],
-                               [DistinguishedName]) -> IO (Maybe (CertificateChain, PrivKey))
-    , onNPNServerSuggest   :: Maybe ([B.ByteString] -> IO B.ByteString)
-    , onServerCertificate  :: CertificateStore -> ValidationCache -> ServiceID -> CertificateChain -> IO [FailedReason]
-    , onSuggestALPN :: IO (Maybe [B.ByteString])
+                               [DistinguishedName]) -> m (Maybe (CertificateChain, PrivKey))
+    , onNPNServerSuggest   :: Maybe ([B.ByteString] -> m B.ByteString)
+    , onServerCertificate  :: CertificateStore -> ValidationCache -> ServiceID -> CertificateChain -> m [FailedReason]
+    , onSuggestALPN :: m (Maybe [B.ByteString])
     }
 
-defaultClientHooks :: ClientHooks
+defaultClientHooks :: MonadIO m => ClientHooks m
 defaultClientHooks = ClientHooks
     { onCertificateRequest = \ _ -> return Nothing
     , onNPNServerSuggest   = Nothing
-    , onServerCertificate  = validateDefault
+    , onServerCertificate  = \s c i cc -> liftIO $ validateDefault s c i cc
     , onSuggestALPN        = return Nothing
     }
 
-instance Show ClientHooks where
+instance Show (ClientHooks m) where
     show _ = "ClientHooks"
-instance Default ClientHooks where
+instance MonadIO m => Default (ClientHooks m) where
     def = defaultClientHooks
 
 -- | A set of callbacks run by the server for various corners of the TLS establishment
-data ServerHooks = ServerHooks
+data ServerHooks m = ServerHooks
     {
       -- | This action is called when a client certificate chain
       -- is received from the client.  When it returns a
       -- CertificateUsageReject value, the handshake is aborted.
-      onClientCertificate :: CertificateChain -> IO CertificateUsage
+      onClientCertificate :: CertificateChain -> m CertificateUsage
 
       -- | This action is called when the client certificate
       -- cannot be verified.  A 'Nothing' argument indicates a
       -- wrong signature, a 'Just e' message signals a crypto
       -- error.
-    , onUnverifiedClientCert :: IO Bool
+    , onUnverifiedClientCert :: m Bool
 
       -- | Allow the server to choose the cipher relative to the
       -- the client version and the client list of ciphers.
@@ -226,13 +228,13 @@ data ServerHooks = ServerHooks
     , onCipherChoosing        :: Version -> [Cipher] -> Cipher
 
       -- | suggested next protocols accoring to the next protocol negotiation extension.
-    , onSuggestNextProtocols  :: IO (Maybe [B.ByteString])
+    , onSuggestNextProtocols  :: m (Maybe [B.ByteString])
       -- | at each new handshake, we call this hook to see if we allow handshake to happens.
-    , onNewHandshake          :: Measurement -> IO Bool
-    , onALPNClientSuggest     :: Maybe ([B.ByteString] -> IO B.ByteString)
+    , onNewHandshake          :: Measurement -> m Bool
+    , onALPNClientSuggest     :: Maybe ([B.ByteString] -> m B.ByteString)
     }
 
-defaultServerHooks :: ServerHooks
+defaultServerHooks :: MonadIO m => ServerHooks m
 defaultServerHooks = ServerHooks
     { onCipherChoosing       = \_ -> head
     , onClientCertificate    = \_ -> return $ CertificateUsageReject $ CertificateRejectOther "no client certificates expected"
@@ -242,7 +244,7 @@ defaultServerHooks = ServerHooks
     , onALPNClientSuggest    = Nothing
     }
 
-instance Show ServerHooks where
+instance Show (ServerHooks m) where
     show _ = "ClientHooks"
-instance Default ServerHooks where
+instance MonadIO m => Default (ServerHooks m) where
     def = defaultServerHooks

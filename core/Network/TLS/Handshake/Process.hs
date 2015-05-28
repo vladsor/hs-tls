@@ -17,7 +17,7 @@ import Control.Applicative
 import Control.Concurrent.MVar
 import Control.Monad.State (gets)
 import Control.Monad
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad.IO.Class (liftIO, MonadIO)
 
 import Network.TLS.Types (Role(..), invertRole)
 import Network.TLS.Util
@@ -32,7 +32,7 @@ import Network.TLS.Handshake.Key
 import Network.TLS.Extension
 import Data.X509 (CertificateChain(..), Certificate(..), getCertificate)
 
-processHandshake :: Context -> Handshake -> IO ()
+processHandshake :: (Functor m, MonadIO m) => Context m -> Handshake -> m ()
 processHandshake ctx hs = do
     role <- usingState_ ctx isClientContext
     case hs of
@@ -59,7 +59,7 @@ processHandshake ctx hs = do
         -- unknown extensions
         processClientExtension _ = return ()
 
-        processCertificates :: Role -> CertificateChain -> IO ()
+--        processCertificates :: MonadIO m => Role -> CertificateChain -> m ()
         processCertificates ServerRole (CertificateChain []) = return ()
         processCertificates ClientRole (CertificateChain []) =
             throwCore $ Error_Protocol ("server certificate missing", True, HandshakeFailure)
@@ -70,7 +70,7 @@ processHandshake ctx hs = do
 -- process the client key exchange message. the protocol expects the initial
 -- client version received in ClientHello, not the negotiated version.
 -- in case the version mismatch, generate a random master secret
-processClientKeyXchg :: Context -> ClientKeyXchgAlgorithmData -> IO ()
+processClientKeyXchg :: (Functor m, MonadIO m) => Context m -> ClientKeyXchgAlgorithmData -> m ()
 processClientKeyXchg ctx (CKX_RSA encryptedPremaster) = do
     (rver, role, random) <- usingState_ ctx $ do
         (,,) <$> getVersion <*> isClientContext <*> genRandom 48
@@ -104,7 +104,7 @@ processClientKeyXchg ctx (CKX_ECDH clientECDHValue) = do
         Just premaster ->
             usingHState ctx $ setMasterSecretFromPre rver role premaster
 
-processClientFinished :: Context -> FinishedData -> IO ()
+processClientFinished :: MonadIO m => Context m -> FinishedData -> m ()
 processClientFinished ctx fdata = do
     (cc,ver) <- usingState_ ctx $ (,) <$> isClientContext <*> getVersion
     expected <- usingHState ctx $ getHandshakeDigest ver $ invertRole cc
@@ -113,7 +113,7 @@ processClientFinished ctx fdata = do
     usingState_ ctx $ updateVerifiedData ServerRole fdata
     return ()
 
-startHandshake :: Context -> Version -> ClientRandom -> IO ()
+startHandshake :: MonadIO m => Context m -> Version -> ClientRandom -> m ()
 startHandshake ctx ver crand = do
     -- FIXME check if handshake is already not null
     liftIO $ modifyMVar_ (ctxHandshake ctx) $ \hs ->

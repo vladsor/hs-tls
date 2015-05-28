@@ -30,7 +30,7 @@ import Network.TLS.Util
 
 import Data.Byteable
 
-processPacket :: Context -> Record Plaintext -> IO (Either TLSError Packet)
+processPacket :: MonadIO m => Context m -> Record Plaintext -> m (Either TLSError Packet)
 
 processPacket _ (Record ProtocolType_AppData _ fragment) = return $ Right $ AppData $ toBytes fragment
 
@@ -72,7 +72,7 @@ processPacket _ (Record ProtocolType_DeprecatedHandshake _ fragment) =
         Left err -> return $ Left err
         Right hs -> return $ Right $ Handshake [hs]
 
-switchRxEncryption :: Context -> IO ()
+switchRxEncryption :: (Monad m, MonadIO m) => Context m -> m ()
 switchRxEncryption ctx =
     usingHState ctx (gets hstPendingRxState) >>= \rx ->
     liftIO $ modifyMVar_ (ctxRxState ctx) (\_ -> return $ fromJust "rx-state" rx)

@@ -47,8 +47,8 @@ import Network.TLS.X509
 --
 -- This is just a helper to pop the next message from the recv layer,
 -- and call handshakeServerWith.
-handshakeServer :: MonadIO m => ServerParams -> Context -> m ()
-handshakeServer sparams ctx = liftIO $ do
+handshakeServer :: (Functor m, MonadIO m) => ServerParams m -> Context m -> m ()
+handshakeServer sparams ctx = do
     hss <- recvPacketHandshake ctx
     case hss of
         [ch] -> handshakeServerWith sparams ctx ch
@@ -79,7 +79,7 @@ handshakeServer sparams ctx = liftIO $ do
 --      -> change cipher      <- change cipher
 --      -> finish             <- finish
 --
-handshakeServerWith :: ServerParams -> Context -> Handshake -> IO ()
+handshakeServerWith :: (Functor m, MonadIO m) => ServerParams m -> Context m -> Handshake -> m ()
 handshakeServerWith sparams ctx clientHello@(ClientHello clientVersion _ clientSession ciphers compressions exts _) = do
     -- check if policy allow this new handshake to happens
     handshakeAuthorized <- withMeasure ctx (onNewHandshake $ serverHooks sparams)
@@ -111,7 +111,7 @@ handshakeServerWith sparams ctx clientHello@(ClientHello clientVersion _ clientS
                 _                         -> throwCore $ Error_Protocol ("key exchange algorithm not implemented", True, HandshakeFailure)
 
     resumeSessionData <- case clientSession of
-            (Session (Just clientSessionId)) -> liftIO $ sessionResume (sharedSessionManager $ ctxShared ctx) clientSessionId
+            (Session (Just clientSessionId)) -> sessionResume (sharedSessionManager $ ctxShared ctx) clientSessionId
             (Session Nothing)                -> return Nothing
 
     case extensionDecode False `fmap` (lookup extensionID_ApplicationLayerProtocolNegotiation exts) of
@@ -139,14 +139,14 @@ handshakeServerWith sparams ctx clientHello@(ClientHello clientVersion _ clientS
 
 handshakeServerWith _ _ _ = throwCore $ Error_Protocol ("unexpected handshake message received in handshakeServerWith", True, HandshakeFailure)
 
-doHandshake :: ServerParams -> Maybe Credential -> Context -> Version -> Cipher
+doHandshake :: (Functor m, MonadIO m) => ServerParams m -> Maybe Credential -> Context m -> Version -> Cipher
             -> Compression -> Session -> Maybe SessionData
-            -> [(ExtensionID, a)] -> IO ()
+            -> [(ExtensionID, a)] -> m ()
 doHandshake sparams mcred ctx chosenVersion usedCipher usedCompression clientSession resumeSessionData exts = do
     case resumeSessionData of
         Nothing -> do
             handshakeSendServerData
-            liftIO $ contextFlush ctx
+            contextFlush ctx
             -- Receive client info until client Finished.
             recvClientData sparams ctx
             sendChangeCipherAndFinish (return ()) ctx ServerRole
@@ -170,7 +170,7 @@ doHandshake sparams mcred ctx chosenVersion usedCipher usedCompression clientSes
             suggest <- usingState_ ctx $ getClientALPNSuggest
             case (onALPNClientSuggest $ serverHooks sparams, suggest) of
                 (Just io, Just protos) -> do
-                    proto <- liftIO $ io protos
+                    proto <- io protos
                     usingState_ ctx $ do
                         setExtensionALPN True
                         setNegotiatedProtocol proto
@@ -181,7 +181,7 @@ doHandshake sparams mcred ctx chosenVersion usedCipher usedCompression clientSes
         npn = do
             nextProtocols <-
                 if clientRequestedNPN
-                    then liftIO $ onSuggestNextProtocols $ serverHooks sparams
+                    then onSuggestNextProtocols $ serverHooks sparams
                     else return Nothing
             case nextProtocols of
                 Just protos -> do
@@ -336,7 +336,7 @@ doHandshake sparams mcred ctx chosenVersion usedCipher usedCompression clientSes
 --      <- [NPN]
 --      <- finish
 --
-recvClientData :: ServerParams -> Context -> IO ()
+recvClientData :: (Functor m, MonadIO m) => ServerParams m -> Context m -> m ()
 recvClientData sparams ctx = runRecvState ctx (RecvStateHandshake processClientCertificate)
   where processClientCertificate (Certificates certs) = do
             -- run certificate recv hook
@@ -344,7 +344,7 @@ recvClientData sparams ctx = runRecvState ctx (RecvStateHandshake processClientC
             -- Call application callback to see whether the
             -- certificate chain is acceptable.
             --
-            usage <- liftIO $ catchException (onClientCertificate (serverHooks sparams) certs) rejectOnException
+            usage <- catchException (onClientCertificate (serverHooks sparams) certs) (liftIO . rejectOnException)
             case usage of
                 CertificateUsageAccept        -> return ()
                 CertificateUsageReject reason -> certificateRejected reason
@@ -397,7 +397,7 @@ recvClientData sparams ctx = runRecvState ctx (RecvStateHandshake processClientC
                     -- the signature is wrong.  In either case,
                     -- ask the application if it wants to
                     -- proceed, we will do that.
-                    res <- liftIO $ onUnverifiedClientCert (serverHooks sparams)
+                    res <- onUnverifiedClientCert (serverHooks sparams)
                     if res
                         then do
                             -- When verification fails, but the

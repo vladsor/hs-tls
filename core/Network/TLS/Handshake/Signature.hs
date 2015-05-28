@@ -39,11 +39,11 @@ getHashAndASN1 hashSig = case hashSig of
     (HashSHA512, SignatureRSA) -> return hashDescrSHA512
     _                          -> throwCore $ Error_Misc "unsupported hash/sig algorithm"
 
-prepareCertificateVerifySignatureData :: Context
+prepareCertificateVerifySignatureData :: MonadIO m => Context m
                                       -> Version
                                       -> Maybe HashAndSignatureAlgorithm
                                       -> Bytes
-                                      -> IO (HashDescr, Bytes)
+                                      -> m (HashDescr, Bytes)
 prepareCertificateVerifySignatureData ctx usedVersion malg msgs
     | usedVersion == SSL3 = do
         Just masterSecret <- usingHState ctx $ gets hstMasterSecret
@@ -74,12 +74,12 @@ signatureHashData SignatureDSS mhash =
         Just _        -> error "invalid DSA hash choice, only SHA1 allowed"
 signatureHashData sig _ = error ("unimplemented signature type: " ++ show sig)
 
-signatureCreate :: Context -> Maybe HashAndSignatureAlgorithm -> HashDescr -> Bytes -> IO DigitallySigned
+signatureCreate :: (Functor m, MonadIO m) => Context m -> Maybe HashAndSignatureAlgorithm -> HashDescr -> Bytes -> m DigitallySigned
 signatureCreate ctx malg hashMethod toSign = do
     cc <- usingState_ ctx $ isClientContext
     DigitallySigned malg <$> signRSA ctx cc hashMethod toSign
 
-signatureVerify :: Context -> SignatureAlgorithm -> Bytes -> DigitallySigned -> IO Bool
+signatureVerify :: MonadIO m => Context m -> SignatureAlgorithm -> Bytes -> DigitallySigned -> m Bool
 signatureVerify ctx sigAlgExpected toVerify digSig@(DigitallySigned hashSigAlg _) = do
     usedVersion <- usingState_ ctx getVersion
     let hashDescr = case (usedVersion, hashSigAlg) of
@@ -90,12 +90,12 @@ signatureVerify ctx sigAlgExpected toVerify digSig@(DigitallySigned hashSigAlg _
             (_,     Just _)     -> error "not expecting hash and signature algorithm in a < TLS12 digitially signed structure"
     signatureVerifyWithHashDescr ctx sigAlgExpected hashDescr toVerify digSig
 
-signatureVerifyWithHashDescr :: Context
+signatureVerifyWithHashDescr :: MonadIO m => Context m
                              -> SignatureAlgorithm
                              -> HashDescr
                              -> Bytes
                              -> DigitallySigned
-                             -> IO Bool
+                             -> m Bool
 signatureVerifyWithHashDescr ctx sigAlgExpected hashDescr toVerify (DigitallySigned _ bs) = do
     cc <- usingState_ ctx $ isClientContext
     case sigAlgExpected of
@@ -103,13 +103,13 @@ signatureVerifyWithHashDescr ctx sigAlgExpected hashDescr toVerify (DigitallySig
         SignatureDSS -> verifyRSA ctx cc hashDescr toVerify bs
         _            -> error "not implemented yet"
 
-generateSignedDHParams :: Context -> ServerDHParams -> IO Bytes
+generateSignedDHParams :: MonadIO m => Context m -> ServerDHParams -> m Bytes
 generateSignedDHParams ctx serverParams = do
     (cran, sran) <- usingHState ctx $ do
                         (,) <$> gets hstClientRandom <*> (fromJust "server random" <$> gets hstServerRandom)
     return $ encodeSignedDHParams cran sran serverParams
 
-generateSignedECDHParams :: Context -> ServerECDHParams -> IO Bytes
+generateSignedECDHParams :: MonadIO m => Context m -> ServerECDHParams -> m Bytes
 generateSignedECDHParams ctx serverParams = do
     (cran, sran) <- usingHState ctx $ do
                         (,) <$> gets hstClientRandom <*> (fromJust "server random" <$> gets hstServerRandom)

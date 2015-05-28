@@ -19,6 +19,8 @@ import qualified Data.ByteString as B
 import Control.Exception (SomeException)
 import Control.Concurrent.Async
 
+import Control.Monad.IO.Class
+
 sub :: Bytes -> Int -> Int -> Maybe Bytes
 sub b offset len
     | B.length b < offset + len = Nothing
@@ -77,5 +79,5 @@ fmapEither f e = case e of
     Left l  -> Left l
     Right r -> Right (f r)
 
-catchException :: IO a -> (SomeException -> IO a) -> IO a
-catchException action handler = withAsync action waitCatch >>= either handler return
+catchException :: MonadIO m => m a -> (SomeException -> m a) -> m a
+catchException action handler = action -- withAsync action waitCatch >>= either handler return

@@ -48,18 +48,18 @@ import Control.Monad.State
 -- the session might not be resumable (for version < TLS1.2).
 --
 -- this doesn't actually close the handle
-bye :: MonadIO m => Context -> m ()
+bye :: MonadIO m => Context m -> m ()
 bye ctx = sendPacket ctx $ Alert [(AlertLevel_Warning, CloseNotify)]
 
 -- | If the Next Protocol Negotiation extension has been used, this will
 -- return get the protocol agreed upon.
-getNegotiatedProtocol :: MonadIO m => Context -> m (Maybe B.ByteString)
-getNegotiatedProtocol ctx = liftIO $ usingState_ ctx S.getNegotiatedProtocol
+getNegotiatedProtocol :: MonadIO m => Context m -> m (Maybe B.ByteString)
+getNegotiatedProtocol ctx = usingState_ ctx S.getNegotiatedProtocol
 
 -- | sendData sends a bunch of data.
 -- It will automatically chunk data to acceptable packet size
-sendData :: MonadIO m => Context -> L.ByteString -> m ()
-sendData ctx dataToSend = liftIO (checkValid ctx) >> mapM_ sendDataChunk (L.toChunks dataToSend)
+sendData :: MonadIO m => Context m -> L.ByteString -> m ()
+sendData ctx dataToSend = (checkValid ctx) >> mapM_ sendDataChunk (L.toChunks dataToSend)
   where sendDataChunk d
             | B.length d > 16384 = do
                 let (sending, remain) = B.splitAt 16384 d
@@ -69,19 +69,20 @@ sendData ctx dataToSend = liftIO (checkValid ctx) >> mapM_ sendDataChunk (L.toCh
 
 -- | recvData get data out of Data packet, and automatically renegotiate if
 -- a Handshake ClientHello is received
-recvData :: MonadIO m => Context -> m B.ByteString
-recvData ctx = liftIO $ do
+recvData :: MonadIO m => Context m -> m B.ByteString
+recvData ctx = do
     checkValid ctx
-    E.catchJust safeHandleError_EOF
-                doRecv
-                (\() -> return B.empty)
+--    liftIO $ E.catchJust safeHandleError_EOF
+--                doRecv
+--                (\() -> return B.empty)
+    doRecv
   where doRecv = do
             pkt <- withReadLock ctx $ recvPacket ctx
             either onError process pkt
-            
+
         safeHandleError_EOF Error_EOF = Just ()
         safeHandleError_EOF _ = Nothing
-        
+
         onError err@(Error_Protocol (reason,fatal,desc)) =
             terminate err (if fatal then AlertLevel_Fatal else AlertLevel_Warning) desc reason
         onError err =
@@ -95,7 +96,7 @@ recvData ctx = liftIO $ do
         process (Alert [(AlertLevel_Warning, CloseNotify)]) = tryBye >> setEOF ctx >> return B.empty
         process (Alert [(AlertLevel_Fatal, desc)]) = do
             setEOF ctx
-            E.throwIO (Terminated True ("received fatal error: " ++ show desc) (Error_Protocol ("remote side fatal error", True, desc)))
+            liftIO $ E.throwIO (Terminated True ("received fatal error: " ++ show desc) (Error_Protocol ("remote side fatal error", True, desc)))
 
         -- when receiving empty appdata, we just retry to get some data.
         process (AppData "") = recvData ctx
@@ -103,7 +104,7 @@ recvData ctx = liftIO $ do
         process p            = let reason = "unexpected message " ++ show p in
                                terminate (Error_Misc reason) AlertLevel_Fatal UnexpectedMessage reason
 
-        terminate :: TLSError -> AlertLevel -> AlertDescription -> String -> IO a
+--        terminate :: MonadIO m => TLSError -> AlertLevel -> AlertDescription -> String -> m a
         terminate err level desc reason = do
             session <- usingState_ ctx getSession
             case session of
@@ -111,7 +112,7 @@ recvData ctx = liftIO $ do
                 Session (Just sid) -> sessionInvalidate (sharedSessionManager $ ctxShared ctx) sid
             catchException (sendPacket ctx $ Alert [(level, desc)]) (\_ -> return ())
             setEOF ctx
-            E.throwIO (Terminated False reason err)
+            liftIO $ E.throwIO (Terminated False reason err)
 
         -- the other side could have close the connection already, so wrap
         -- this in a try and ignore all exceptions
@@ -119,5 +120,5 @@ recvData ctx = liftIO $ do
 
 {-# DEPRECATED recvData' "use recvData that returns strict bytestring" #-}
 -- | same as recvData but returns a lazy bytestring.
-recvData' :: MonadIO m => Context -> m L.ByteString
+recvData' :: MonadIO m => Context m -> m L.ByteString
 recvData' ctx = recvData ctx >>= return . L.fromChunks . (:[])

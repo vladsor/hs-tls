@@ -72,6 +72,7 @@ import Control.Monad.State
 import Control.Exception (throwIO, Exception())
 import Data.IORef
 import Data.Tuple
+import Control.Exception.Base
 
 
 -- | Information related to a running context, e.g. current cipher
@@ -82,10 +83,10 @@ data Information = Information
     } deriving (Show,Eq)
 
 -- | A TLS Context keep tls specific state, parameters and backend information.
-data Context = Context
-    { ctxConnection       :: Backend   -- ^ return the backend object associated with this context
+data Context m = Context
+    { ctxConnection       :: Backend m   -- ^ return the backend object associated with this context
     , ctxSupported        :: Supported
-    , ctxShared           :: Shared
+    , ctxShared           :: Shared m
     , ctxCiphers          :: [Cipher]  -- ^ prepared list of allowed ciphers according to parameters
     , ctxState            :: MVar TLSState
     , ctxMeasurement      :: IORef Measurement
@@ -98,31 +99,31 @@ data Context = Context
     , ctxTxState          :: MVar RecordState -- ^ current tx state
     , ctxRxState          :: MVar RecordState -- ^ current rx state
     , ctxHandshake        :: MVar (Maybe HandshakeState) -- ^ optional handshake state
-    , ctxDoHandshake      :: Context -> IO ()
-    , ctxDoHandshakeWith  :: Context -> Handshake -> IO ()
-    , ctxHooks            :: IORef Hooks   -- ^ hooks for this context
+    , ctxDoHandshake      :: Context m -> m ()
+    , ctxDoHandshakeWith  :: Context m -> Handshake -> m ()
+    , ctxHooks            :: IORef (Hooks m)   -- ^ hooks for this context
     , ctxLockWrite        :: MVar ()       -- ^ lock to use for writing data (including updating the state)
     , ctxLockRead         :: MVar ()       -- ^ lock to use for reading data (including updating the state)
     , ctxLockState        :: MVar ()       -- ^ lock used during read/write when receiving and sending packet.
                                            -- it is usually nested in a write or read lock.
     }
 
-updateMeasure :: Context -> (Measurement -> Measurement) -> IO ()
+updateMeasure :: MonadIO m => Context m -> (Measurement -> Measurement) -> m ()
 updateMeasure ctx f = do
-    x <- readIORef (ctxMeasurement ctx)
-    writeIORef (ctxMeasurement ctx) $! f x
+    x <- liftIO $ readIORef (ctxMeasurement ctx)
+    liftIO $ writeIORef (ctxMeasurement ctx) $! f x
 
-withMeasure :: Context -> (Measurement -> IO a) -> IO a
-withMeasure ctx f = readIORef (ctxMeasurement ctx) >>= f
+withMeasure :: MonadIO m => Context m -> (Measurement -> m a) -> m a
+withMeasure ctx f = liftIO (readIORef (ctxMeasurement ctx)) >>= f
 
-contextFlush :: Context -> IO ()
+contextFlush :: MonadIO m => Context m -> m ()
 contextFlush = backendFlush . ctxConnection
 
-contextClose :: Context -> IO ()
+contextClose :: MonadIO m => Context m -> m ()
 contextClose = backendClose . ctxConnection
 
 -- | Information about the current context
-contextGetInformation :: Context -> IO (Maybe Information)
+contextGetInformation :: MonadIO m => Context m -> m (Maybe Information)
 contextGetInformation ctx = do
     ver    <- usingState_ ctx $ gets stVersion
     (cipher,comp) <- failOnEitherError $ runRxState ctx $ gets $ \st -> (stCipher st, stCompression st)
@@ -130,37 +131,37 @@ contextGetInformation ctx = do
         (Just v, Just c) -> return $ Just $ Information v c comp
         _                -> return Nothing
 
-contextSend :: Context -> Bytes -> IO ()
+contextSend :: MonadIO m => Context m -> Bytes -> m ()
 contextSend c b = updateMeasure c (addBytesSent $ B.length b) >> (backendSend $ ctxConnection c) b
 
-contextRecv :: Context -> Int -> IO Bytes
+contextRecv :: MonadIO m => Context m -> Int -> m Bytes
 contextRecv c sz = updateMeasure c (addBytesReceived sz) >> (backendRecv $ ctxConnection c) sz
 
-ctxEOF :: Context -> IO Bool
-ctxEOF ctx = readIORef $ ctxEOF_ ctx
+ctxEOF :: MonadIO m => Context m -> m Bool
+ctxEOF ctx = liftIO $ readIORef $ ctxEOF_ ctx
 
-ctxHasSSLv2ClientHello :: Context -> IO Bool
-ctxHasSSLv2ClientHello ctx = readIORef $ ctxSSLv2ClientHello ctx
+ctxHasSSLv2ClientHello :: MonadIO m => Context m -> m Bool
+ctxHasSSLv2ClientHello ctx = liftIO $ readIORef $ ctxSSLv2ClientHello ctx
 
-ctxDisableSSLv2ClientHello :: Context -> IO ()
-ctxDisableSSLv2ClientHello ctx = writeIORef (ctxSSLv2ClientHello ctx) False
+ctxDisableSSLv2ClientHello :: MonadIO m => Context m -> m ()
+ctxDisableSSLv2ClientHello ctx = liftIO $ writeIORef (ctxSSLv2ClientHello ctx) False
 
-setEOF :: Context -> IO ()
-setEOF ctx = writeIORef (ctxEOF_ ctx) True
+setEOF :: MonadIO m => Context m -> m ()
+setEOF ctx = liftIO $ writeIORef (ctxEOF_ ctx) True
 
-ctxEstablished :: Context -> IO Bool
-ctxEstablished ctx = readIORef $ ctxEstablished_ ctx
+ctxEstablished :: MonadIO m => Context m -> m Bool
+ctxEstablished ctx = liftIO $ readIORef $ ctxEstablished_ ctx
 
-ctxWithHooks :: Context -> (Hooks -> IO a) -> IO a
-ctxWithHooks ctx f = readIORef (ctxHooks ctx) >>= f
+ctxWithHooks :: MonadIO m => Context m -> (Hooks m -> m a) -> m a
+ctxWithHooks ctx f = liftIO (readIORef (ctxHooks ctx)) >>= f
 
-contextModifyHooks :: Context -> (Hooks -> Hooks) -> IO ()
-contextModifyHooks ctx f = modifyIORef (ctxHooks ctx) f
+contextModifyHooks :: MonadIO m => Context m -> (Hooks m -> Hooks m) -> m ()
+contextModifyHooks ctx f = liftIO $ modifyIORef (ctxHooks ctx) f
 
-setEstablished :: Context -> Bool -> IO ()
-setEstablished ctx v = writeIORef (ctxEstablished_ ctx) v
+setEstablished :: MonadIO m => Context m -> Bool -> m ()
+setEstablished ctx v = liftIO $ writeIORef (ctxEstablished_ ctx) v
 
-withLog :: Context -> (Logging -> IO ()) -> IO ()
+withLog :: MonadIO m => Context m -> (Logging m -> m ()) -> m ()
 withLog ctx f = ctxWithHooks ctx (f . hookLogging)
 
 throwCore :: (MonadIO m, Exception e) => e -> m a
@@ -173,51 +174,66 @@ failOnEitherError f = do
         Left err -> throwCore err
         Right r  -> return r
 
-usingState :: Context -> TLSSt a -> IO (Either TLSError a)
+usingState :: MonadIO m => Context m -> TLSSt a -> m (Either TLSError a)
 usingState ctx f =
-    modifyMVar (ctxState ctx) $ \st ->
+    liftIO $ modifyMVar (ctxState ctx) $ \st ->
             let (a, newst) = runTLSState f st
              in newst `seq` return (newst, a)
 
-usingState_ :: Context -> TLSSt a -> IO a
+usingState_ :: MonadIO m => Context m -> TLSSt a -> m a
 usingState_ ctx f = failOnEitherError $ usingState ctx f
 
-usingHState :: Context -> HandshakeM a -> IO a
+usingHState :: MonadIO m => Context m -> HandshakeM a -> m a
 usingHState ctx f = liftIO $ modifyMVar (ctxHandshake ctx) $ \mst ->
     case mst of
         Nothing -> throwCore $ Error_Misc "missing handshake"
         Just st -> return $ swap (Just `fmap` runHandshake st f)
 
-getHState :: Context -> IO (Maybe HandshakeState)
+getHState :: MonadIO m => Context m -> m (Maybe HandshakeState)
 getHState ctx = liftIO $ readMVar (ctxHandshake ctx)
 
-runTxState :: Context -> RecordM a -> IO (Either TLSError a)
+runTxState :: MonadIO m => Context m -> RecordM a -> m (Either TLSError a)
 runTxState ctx f = do
     ver <- usingState_ ctx (getVersionWithDefault $ maximum $ supportedVersions $ ctxSupported ctx)
-    modifyMVar (ctxTxState ctx) $ \st ->
+    liftIO $ modifyMVar (ctxTxState ctx) $ \st ->
         case runRecordM f ver st of
             Left err         -> return (st, Left err)
             Right (a, newSt) -> return (newSt, Right a)
 
-runRxState :: Context -> RecordM a -> IO (Either TLSError a)
+runRxState :: MonadIO m => Context m -> RecordM a -> m (Either TLSError a)
 runRxState ctx f = do
     ver <- usingState_ ctx getVersion
-    modifyMVar (ctxRxState ctx) $ \st ->
+    liftIO $ modifyMVar (ctxRxState ctx) $ \st ->
         case runRecordM f ver st of
             Left err         -> return (st, Left err)
             Right (a, newSt) -> return (newSt, Right a)
 
-getStateRNG :: Context -> Int -> IO Bytes
+getStateRNG :: MonadIO m => Context m -> Int -> m Bytes
 getStateRNG ctx n = usingState_ ctx $ genRandom n
 
-withReadLock :: Context -> IO a -> IO a
-withReadLock ctx f = withMVar (ctxLockRead ctx) (const f)
+withReadLock :: MonadIO m => Context m -> m a -> m a
+withReadLock ctx f = withMVar' (ctxLockRead ctx) (const f)
 
-withWriteLock :: Context -> IO a -> IO a
-withWriteLock ctx f = withMVar (ctxLockWrite ctx) (const f)
+withWriteLock :: MonadIO m => Context m -> m a -> m a
+withWriteLock ctx f = withMVar' (ctxLockWrite ctx) (const f)
 
-withRWLock :: Context -> IO a -> IO a
+withRWLock :: MonadIO m => Context m -> m a -> m a
 withRWLock ctx f = withReadLock ctx $ withWriteLock ctx f
 
-withStateLock :: Context -> IO a -> IO a
-withStateLock ctx f = withMVar (ctxLockState ctx) (const f)
+withStateLock :: MonadIO m => Context m -> m a -> m a
+withStateLock ctx f = withMVar' (ctxLockState ctx) (const f)
+
+
+withMVar' :: MonadIO m => MVar a -> (a -> m b) -> m b
+withMVar' m io = do
+    a <- liftIO $ takeMVar m
+    b <- io a
+    liftIO $ putMVar m a
+    return b
+  {-
+  mask $ \restore -> do
+    a <- takeMVar m
+    b <- restore (io a) `onException` putMVar m a
+    putMVar m a
+    return b
+-}

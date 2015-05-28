@@ -35,30 +35,30 @@ import Data.ByteString.Char8 ()
 import Control.Monad.State
 import Control.Exception (throwIO)
 
-handshakeFailed :: TLSError -> IO ()
-handshakeFailed err = throwIO $ HandshakeFailed err
+handshakeFailed :: MonadIO m => TLSError -> m ()
+handshakeFailed err = liftIO $ throwIO $ HandshakeFailed err
 
 errorToAlert :: TLSError -> Packet
 errorToAlert (Error_Protocol (_, _, ad)) = Alert [(AlertLevel_Fatal, ad)]
 errorToAlert _                           = Alert [(AlertLevel_Fatal, InternalError)]
 
-unexpected :: String -> Maybe [Char] -> IO a
+unexpected :: MonadIO m => String -> Maybe [Char] -> m a
 unexpected msg expected = throwCore $ Error_Packet_unexpected msg (maybe "" (" expected: " ++) expected)
 
-newSession :: Context -> IO Session
+newSession :: MonadIO m => Context m -> m Session
 newSession ctx
     | supportedSession $ ctxSupported ctx = getStateRNG ctx 32 >>= return . Session . Just
     | otherwise                           = return $ Session Nothing
 
 -- | when a new handshake is done, wrap up & clean up.
-handshakeTerminate :: Context -> IO ()
+handshakeTerminate :: MonadIO m => Context m -> m ()
 handshakeTerminate ctx = do
     session <- usingState_ ctx getSession
     -- only callback the session established if we have a session
     case session of
         Session (Just sessionId) -> do
             sessionData <- getSessionData ctx
-            liftIO $ sessionEstablish (sharedSessionManager $ ctxShared ctx) sessionId (fromJust "session-data" sessionData)
+            sessionEstablish (sharedSessionManager $ ctxShared ctx) sessionId (fromJust "session-data" sessionData)
         _ -> return ()
     -- forget all handshake data now and reset bytes counters.
     liftIO $ modifyMVar_ (ctxHandshake ctx) (return . const Nothing)
@@ -67,19 +67,19 @@ handshakeTerminate ctx = do
     setEstablished ctx True
     return ()
 
-sendChangeCipherAndFinish :: IO ()   -- ^ message possibly sent between ChangeCipherSpec and Finished.
-                          -> Context
+sendChangeCipherAndFinish :: MonadIO m => m ()   -- ^ message possibly sent between ChangeCipherSpec and Finished.
+                          -> Context m
                           -> Role
-                          -> IO ()
+                          -> m ()
 sendChangeCipherAndFinish betweenCall ctx role = do
     sendPacket ctx ChangeCipherSpec
     betweenCall
-    liftIO $ contextFlush ctx
+    contextFlush ctx
     cf <- usingState_ ctx getVersion >>= \ver -> usingHState ctx $ getHandshakeDigest ver role
     sendPacket ctx (Handshake [Finished cf])
-    liftIO $ contextFlush ctx
+    contextFlush ctx
 
-recvChangeCipherAndFinish :: Context -> IO ()
+recvChangeCipherAndFinish :: (Functor m, MonadIO m) => Context m -> m ()
 recvChangeCipherAndFinish ctx = runRecvState ctx (RecvStateNext expectChangeCipher)
   where expectChangeCipher ChangeCipherSpec = return $ RecvStateHandshake expectFinish
         expectChangeCipher p                = unexpected (show p) (Just "change cipher")
@@ -91,7 +91,7 @@ data RecvState m =
     | RecvStateHandshake (Handshake -> m (RecvState m))
     | RecvStateDone
 
-recvPacketHandshake :: Context -> IO [Handshake]
+recvPacketHandshake :: MonadIO m => Context m -> m [Handshake]
 recvPacketHandshake ctx = do
     pkts <- recvPacket ctx
     case pkts of
@@ -100,7 +100,7 @@ recvPacketHandshake ctx = do
         Left err            -> throwCore err
 
 -- | process a list of handshakes message in the recv state machine.
-onRecvStateHandshake :: Context -> RecvState IO -> [Handshake] -> IO (RecvState IO)
+onRecvStateHandshake :: (Functor m, MonadIO m) => Context m -> RecvState m -> [Handshake] -> m (RecvState m)
 onRecvStateHandshake _   recvState [] = return recvState
 onRecvStateHandshake ctx (RecvStateHandshake f) (x:xs) = do
     nstate <- f x
@@ -108,12 +108,12 @@ onRecvStateHandshake ctx (RecvStateHandshake f) (x:xs) = do
     onRecvStateHandshake ctx nstate xs
 onRecvStateHandshake _ _ _   = unexpected "spurious handshake" Nothing
 
-runRecvState :: Context -> RecvState IO -> IO ()
+runRecvState :: (Functor m, MonadIO m) => Context m -> RecvState m -> m ()
 runRecvState _   (RecvStateDone)   = return ()
 runRecvState ctx (RecvStateNext f) = recvPacket ctx >>= either throwCore f >>= runRecvState ctx
 runRecvState ctx iniState          = recvPacketHandshake ctx >>= onRecvStateHandshake ctx iniState >>= runRecvState ctx
 
-getSessionData :: Context -> IO (Maybe SessionData)
+getSessionData :: MonadIO m => Context m -> m (Maybe SessionData)
 getSessionData ctx = do
     ver <- usingState_ ctx getVersion
     mms <- usingHState ctx (gets hstMasterSecret)

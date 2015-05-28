@@ -28,16 +28,16 @@ import Control.Monad.State
 import Control.Exception (throwIO)
 import System.IO.Error (mkIOError, eofErrorType)
 
-checkValid :: Context -> IO ()
+checkValid :: MonadIO m => Context m -> m ()
 checkValid ctx = do
     established <- ctxEstablished ctx
     unless established $ liftIO $ throwIO ConnectionNotEstablished
     eofed <- ctxEOF ctx
     when eofed $ liftIO $ throwIO $ mkIOError eofErrorType "data" Nothing Nothing
 
-readExact :: Context -> Int -> IO Bytes
+readExact :: MonadIO m => Context m -> Int -> m Bytes
 readExact ctx sz = do
-    hdrbs <- liftIO $ contextRecv ctx sz
+    hdrbs <- contextRecv ctx sz
     when (B.length hdrbs < sz) $ do
         setEOF ctx
         if B.null hdrbs
@@ -48,9 +48,9 @@ readExact ctx sz = do
 -- | recvRecord receive a full TLS record (header + data), from the other side.
 --
 -- The record is disengaged from the record layer
-recvRecord :: Bool    -- ^ flag to enable SSLv2 compat ClientHello reception
-           -> Context -- ^ TLS context
-           -> IO (Either TLSError (Record Plaintext))
+recvRecord :: (Monad m, MonadIO m) => Bool    -- ^ flag to enable SSLv2 compat ClientHello reception
+           -> Context m -- ^ TLS context
+           -> m (Either TLSError (Record Plaintext))
 recvRecord compatSSLv2 ctx
 #ifdef SSLV2_COMPATIBLE
     | compatSSLv2 = do
@@ -73,17 +73,17 @@ recvRecord compatSSLv2 ctx
                         Right header -> getRecord header content
 #endif
               maximumSizeExceeded = Error_Protocol ("record exceeding maximum size", True, RecordOverflow)
-              getRecord :: Header -> Bytes -> IO (Either TLSError (Record Plaintext))
+--              getRecord :: Header -> Bytes -> IO (Either TLSError (Record Plaintext))
               getRecord header content = do
-                    liftIO $ withLog ctx $ \logging -> loggingIORecv logging header content
+                    withLog ctx $ \logging -> loggingIORecv logging header content
                     runRxState ctx $ disengageRecord $ rawToRecord header (fragmentCiphertext content)
 
 
 -- | receive one packet from the context that contains 1 or
 -- many messages (many only in case of handshake). if will returns a
 -- TLSError if the packet is unexpected or malformed
-recvPacket :: MonadIO m => Context -> m (Either TLSError Packet)
-recvPacket ctx = liftIO $ do
+recvPacket :: MonadIO m => Context m -> m (Either TLSError Packet)
+recvPacket ctx = do
     compatSSLv2 <- ctxHasSSLv2ClientHello ctx
     erecord     <- recvRecord compatSSLv2 ctx
     case erecord of
@@ -102,7 +102,7 @@ recvPacket ctx = liftIO $ do
             return pkt
 
 -- | Send one packet to the context
-sendPacket :: MonadIO m => Context -> Packet -> m ()
+sendPacket :: MonadIO m => Context m -> Packet -> m ()
 sendPacket ctx pkt = do
     -- in ver <= TLS1.0, block ciphers using CBC are using CBC residue as IV, which can be guessed
     -- by an attacker. Hence, an empty packet is sent before a normal data packet, to
@@ -110,12 +110,12 @@ sendPacket ctx pkt = do
     withEmptyPacket <- liftIO $ readIORef $ ctxNeedEmptyPacket ctx
     when (isNonNullAppData pkt && withEmptyPacket) $ sendPacket ctx $ AppData B.empty
 
-    edataToSend <- liftIO $ do
+    edataToSend <- do
                         withLog ctx $ \logging -> loggingPacketSent logging (show pkt)
                         writePacket ctx pkt
     case edataToSend of
         Left err         -> throwCore err
-        Right dataToSend -> liftIO $ do
+        Right dataToSend -> do
             withLog ctx $ \logging -> loggingIOSent logging dataToSend
             contextSend ctx dataToSend
   where isNonNullAppData (AppData b) = not $ B.null b
