@@ -75,7 +75,6 @@ recvData ctx = do
     catchJust safeHandleError_EOF
               doRecv
               (\() -> return B.empty)
-    doRecv
   where doRecv = do
             pkt <- withReadLock ctx $ recvPacket ctx
             either onError process pkt
