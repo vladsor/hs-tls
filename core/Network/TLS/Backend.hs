@@ -1,6 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 -- |
@@ -41,7 +40,7 @@ data MonadIO m => Backend m = Backend
     , backendRecv  :: Int -> m ByteString -- ^ Receive specified number of bytes from the connection.
     }
 
-class MonadIO m => HasBackend a m | a -> m where
+class MonadIO m => HasBackend a m where
     initializeBackend :: a -> m ()
     getBackend :: a -> Backend m
 
