@@ -99,7 +99,7 @@ arbitraryPairParams = do
                                     }
             , serverDHEParams = Just dhParams
             , serverShared = def { sharedCredentials = Credentials creds }
-            }
+            } :: ServerParams IO
     let clientState = (defaultParamsClient "" B.empty)
             { clientSupported = def { supportedCiphers  = clientCiphers
                                     , supportedVersions = allowedVersions
@@ -110,12 +110,12 @@ arbitraryPairParams = do
                                         , cacheQuery = \_ _ _ -> return ValidationCachePass
                                         }
                                 }
-            }
+            } :: ClientParams IO
     return (clientState, serverState)
   where
         arbitraryCiphers  = resize (length knownCiphers + 1) $ listOf1 (elements knownCiphers)
 
-setPairParamsSessionManager :: SessionManager -> (ClientParams, ServerParams) -> (ClientParams, ServerParams)
+setPairParamsSessionManager :: SessionManager m -> (ClientParams m, ServerParams m) -> (ClientParams m, ServerParams m)
 setPairParamsSessionManager manager (clientState, serverState) = (nc,ns)
   where nc = clientState { clientShared = updateSessionManager $ clientShared clientState }
         ns = serverState { serverShared = updateSessionManager $ serverShared serverState }

@@ -115,7 +115,7 @@ prop_handshake_renegociation = do
 
 -- | simple session manager to store one session id and session data for a single thread.
 -- a Real concurrent session manager would use an MVar and have multiples items.
-oneSessionManager :: IORef (Maybe (SessionID, SessionData)) -> SessionManager
+oneSessionManager :: IORef (Maybe (SessionID, SessionData)) -> SessionManager IO
 oneSessionManager ref = SessionManager
     { sessionResume     = \myId     -> (>>= maybeResume myId) <$> readIORef ref
     , sessionEstablish  = \myId dat -> writeIORef ref $ Just (myId, dat)
